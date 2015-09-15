@@ -1,0 +1,65 @@
+#!/bin/bash
+
+set -e
+
+TEMPDIR=$(mktemp -d)
+mkfifo $TEMPDIR/out.pipe
+
+exec 3>&1
+
+tee $TEMPDIR/out.log < $TEMPDIR/out.pipe &
+pid_out=$!
+exec 1>$TEMPDIR/out.pipe 2>$TEMPDIR/out.pipe
+
+exit_handler() {
+  exec 1>&3 3>&-
+  #wait $pid_out
+
+  #TODO: make sure the update we're loading the log to is current
+  # if it fails before we record a new update, it will overwirte the old one
+  ./load-log $TEMPDIR/out.log
+
+  rm -rf $TEMPDIR
+}
+
+trap exit_handler EXIT
+
+orig_listing=$(ls -l current_lists/daily_*_summary.txt.bz2)
+
+wget -N --directory-prefix=./current_lists --progress=dot:binary http://fah-web.stanford.edu/daily_team_summary.txt.bz2
+wget -N --directory-prefix=./current_lists --progress=dot:binary http://fah-web.stanford.edu/daily_user_summary.txt.bz2
+
+second_listing=$(ls -l current_lists/daily_*_summary.txt.bz2)
+
+if [ "$orig_listing" == "$second_listing" ]
+then
+  echo "Lists are up to date"
+  exit 1
+fi
+
+team_timestamp=$(bzcat current_lists/daily_team_summary.txt.bz2 | head -1)
+user_timestamp=$(bzcat current_lists/daily_user_summary.txt.bz2 | head -1)
+
+if [ "$team_timestamp" != "$user_timestamp" ]
+then
+  echo "Lists don't have matching timestamps"
+  exit 1
+fi
+
+echo "Timestamp: $team_timestamp"
+timestamp=$(./convert-date "$team_timestamp")
+
+mkdir -p archive_lists/$timestamp
+
+# next section borrwed from http://forum.kakaostats.com/fahstats/fahstats/scripts/ks2.sh
+cp --no-clobber -p  \
+    current_lists/daily_*_summary.txt.bz2 \
+    archive_lists/$timestamp/
+
+echo "Parsing lists"
+
+bzcat \
+    archive_lists/$timestamp/daily_team_summary.txt.bz2 \
+    archive_lists/$timestamp/daily_user_summary.txt.bz2 \
+        | ./parse-lists
+
